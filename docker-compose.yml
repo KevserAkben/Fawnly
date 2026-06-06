@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fawnly-postgres
+    environment:
+      POSTGRES_DB: fawnly
+      POSTGRES_USER: fawnly
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+    volumes:
+      - fawnly_pgdata:/var/lib/postgresql/data
+
+volumes:
+  fawnly_pgdata:

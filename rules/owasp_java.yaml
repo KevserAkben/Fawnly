@@ -1,0 +1,52 @@
+rules:
+  - id: owasp-a02-weak-hash
+    languages: [java]
+    severity: HIGH
+    message: "Weak cryptographic hash algorithm detected (MD5 or SHA-1). Use SHA-256 or stronger."
+    metadata:
+      owasp: A02:2021
+      cwe: CWE-327
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: MessageDigest.getInstance("MD5")
+          - pattern: MessageDigest.getInstance("SHA-1")
+          - pattern: MessageDigest.getInstance('MD5')
+          - pattern: MessageDigest.getInstance('SHA-1')
+
+  - id: owasp-a03-command-injection
+    languages: [java]
+    severity: HIGH
+    message: "Potential command injection via Runtime.exec() with user-controlled input."
+    metadata:
+      owasp: A03:2021
+      cwe: CWE-78
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: Runtime.getRuntime().exec($CMD + ...)
+          - pattern: Runtime.getRuntime().exec("..." + $VAR + "...")
+          - pattern: |
+              $CMD = ...;
+              ...
+              Runtime.getRuntime().exec($CMD)
+          - pattern: |
+              $VAR = ...;
+              ...
+              Runtime.getRuntime().exec("..." + $VAR + "...")
+
+  - id: owasp-a07-hardcoded-secrets
+    languages: [java]
+    severity: MEDIUM
+    message: "Hardcoded secret detected. Store secrets in environment variables or a secrets manager."
+    metadata:
+      owasp: A07:2021
+      cwe: CWE-798
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: String $VAR = "..."
+          - pattern: final String $VAR = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i).*(password|secret|api_key|apikey|token|passwd|credential).*
