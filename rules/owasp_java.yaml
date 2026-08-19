@@ -10,9 +10,14 @@ rules:
     patterns:
       - pattern-either:
           - pattern: MessageDigest.getInstance("MD5")
+          - pattern: MessageDigest.getInstance("md5")
           - pattern: MessageDigest.getInstance("SHA-1")
+          - pattern: MessageDigest.getInstance("SHA1")
+          - pattern: MessageDigest.getInstance("sha-1")
+          - pattern: MessageDigest.getInstance("sha1")
           - pattern: MessageDigest.getInstance('MD5')
           - pattern: MessageDigest.getInstance('SHA-1')
+          - pattern: MessageDigest.getInstance('SHA1')
 
   - id: owasp-a03-command-injection
     languages: [java]
@@ -25,15 +30,12 @@ rules:
     patterns:
       - pattern-either:
           - pattern: Runtime.getRuntime().exec($CMD + ...)
+          - pattern: Runtime.getRuntime().exec("..." + $VAR)
           - pattern: Runtime.getRuntime().exec("..." + $VAR + "...")
           - pattern: |
               $CMD = ...;
               ...
               Runtime.getRuntime().exec($CMD)
-          - pattern: |
-              $VAR = ...;
-              ...
-              Runtime.getRuntime().exec("..." + $VAR + "...")
 
   - id: owasp-a07-hardcoded-secrets
     languages: [java]
@@ -45,8 +47,14 @@ rules:
       category: security
     patterns:
       - pattern-either:
-          - pattern: String $VAR = "..."
-          - pattern: final String $VAR = "..."
+          - pattern: String $VAR = "$VAL"
+          - pattern: final String $VAR = "$VAL"
       - metavariable-regex:
           metavariable: $VAR
           regex: (?i).*(password|secret|api_key|apikey|token|passwd|credential).*
+      - metavariable-regex:
+          metavariable: $VAL
+          regex: .{6,}
+      - metavariable-regex:
+          metavariable: $VAL
+          regex: (?i)^(?!.*(changeme|placeholder|example|todo|your-)).+

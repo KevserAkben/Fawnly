@@ -56,6 +56,7 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public boolean isEnabled() {
-        return user.isActive();
+        // Keep true so login can distinguish bad credentials from an unverified account
+        return true;
     }
 }

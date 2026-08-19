@@ -7,9 +7,7 @@ export const startZipScan = (projectName, file) => {
   const formData = new FormData()
   formData.append('projectName', projectName)
   formData.append('file', file)
-  return client.post('/api/scans/zip', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+  return client.post('/api/scans/zip', formData)
 }
 
 export const getScanStatus = (id) =>

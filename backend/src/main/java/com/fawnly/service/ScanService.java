@@ -13,6 +13,8 @@ import com.fawnly.util.ValidationUtil;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.file.Files;
@@ -46,18 +48,18 @@ public class ScanService {
     @Transactional
     public ScanResponse startGitScan(Long userId, String username, StartScanRequest request) {
         String projectName = SanitizeUtil.sanitize(request.getProjectName());
-        String githubUrl = SanitizeUtil.sanitize(request.getGithubUrl());
+        String githubUrl = ValidationUtil.normalizeGithubUrl(request.getGithubUrl());
 
         if (!"git".equals(request.getSourceType())) {
             throw new BadRequestException("Invalid source type for git scan");
         }
-        if (!ValidationUtil.isValidGithubUrl(githubUrl)) {
+        if (githubUrl == null) {
             throw new BadRequestException("Invalid GitHub URL format");
         }
 
         Scan scan = createScan(userId, projectName, "git", githubUrl);
         auditLogService.log(userId, username, "SCAN_STARTED", "Git scan started for project: " + projectName);
-        scanExecutorService.executeScan(scan.getId());
+        enqueueScanAfterCommit(scan.getId());
         return toResponse(scan);
     }
 
@@ -88,16 +90,16 @@ public class ScanService {
             Path zipPath = scanDir.resolve("upload.zip");
             Files.copy(file.getInputStream(), zipPath, StandardCopyOption.REPLACE_EXISTING);
 
-            scan.setSourceRef(zipPath.toString());
+            scan.setSourceRef(zipPath.toAbsolutePath().normalize().toString());
             scanRepository.save(scan);
 
             auditLogService.log(userId, username, "SCAN_STARTED", "ZIP scan started for project: " + sanitizedName);
-            scanExecutorService.executeScan(scan.getId());
+            enqueueScanAfterCommit(scan.getId());
             return toResponse(scan);
         } catch (BadRequestException e) {
             throw e;
         } catch (Exception e) {
-            throw new BadRequestException("Failed to process ZIP file: " + e.getMessage());
+            throw new BadRequestException("Failed to process ZIP file");
         }
     }
 
@@ -124,6 +126,10 @@ public class ScanService {
         Scan scan = scanRepository.findByIdAndUserId(scanId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Scan not found"));
 
+        if ("running".equals(scan.getStatus())) {
+            throw new BadRequestException("Cannot delete a scan that is still running");
+        }
+
         findingRepository.deleteByScanId(scanId);
         scanRepository.delete(scan);
 
@@ -131,6 +137,19 @@ public class ScanService {
         scanExecutorService.cleanupDirectory(scanDir);
 
         auditLogService.log(userId, username, "SCAN_DELETED", "Scan deleted: " + scan.getProjectName());
+    }
+
+    private void enqueueScanAfterCommit(Long scanId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    scanExecutorService.executeScan(scanId);
+                }
+            });
+        } else {
+            scanExecutorService.executeScan(scanId);
+        }
     }
 
     private Scan createScan(Long userId, String projectName, String sourceType, String sourceRef) {

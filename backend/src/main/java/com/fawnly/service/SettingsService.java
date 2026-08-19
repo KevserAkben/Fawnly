@@ -73,6 +73,8 @@ public class SettingsService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         String code = OtpGenerator.generate();
+        emailVerificationRepository.invalidateUnused(user.getId(), AuthService.PURPOSE_PASSWORD_CHANGE);
+
         EmailVerification verification = new EmailVerification();
         verification.setUserId(user.getId());
         verification.setCode(code);

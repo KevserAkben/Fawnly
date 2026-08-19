@@ -1,4 +1,4 @@
-const GITHUB_REGEX = /^https?:\/\/(www\.)?github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(\/.*)?$/
+const GITHUB_REGEX = /^https:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/.*)?\/?$/i
 
 export function isValidGithubUrl(url) {
   return GITHUB_REGEX.test(url?.trim())

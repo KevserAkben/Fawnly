@@ -57,7 +57,7 @@ export default function Dashboard() {
           <Link to="/scan" className="btn-primary text-sm">Yeni Tarama</Link>
         </div>
 
-        {data.recentScans?.length === 0 ? (
+        {(!data.recentScans || data.recentScans.length === 0) ? (
           <p className="text-gray-500 text-center py-8">Henüz tarama yok. İlk taramanızı başlatın!</p>
         ) : (
           <div className="overflow-x-auto">

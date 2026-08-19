@@ -29,9 +29,18 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final int requestsPerMinute;
 
     public RateLimitFilter(ObjectMapper objectMapper,
-                           @Value("${fawnly.rate-limit.requests-per-minute:30}") int requestsPerMinute) {
+                           @Value("${fawnly.rate-limit.requests-per-minute:60}") int requestsPerMinute) {
         this.objectMapper = objectMapper;
         this.requestsPerMinute = requestsPerMinute;
+    }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            return true;
+        }
+        String uri = request.getRequestURI();
+        return uri.matches("/api/scans/\\d+/status");
     }
 
     @Override
@@ -61,11 +70,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (auth != null && auth.isAuthenticated() && auth.getPrincipal() instanceof UserPrincipal principal) {
             return "user:" + principal.getId();
         }
-        String ip = request.getRemoteAddr();
-        if (request.getHeader("X-Forwarded-For") != null) {
-            ip = request.getHeader("X-Forwarded-For").split(",")[0].trim();
-        }
-        return "ip:" + ip;
+        return "ip:" + request.getRemoteAddr();
     }
 
     private Bucket createBucket() {

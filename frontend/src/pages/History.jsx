@@ -26,8 +26,8 @@ export default function History() {
     try {
       await deleteScan(id)
       setScans((prev) => prev.filter((s) => s.id !== id))
-    } catch {
-      alert('Silme başarısız')
+    } catch (err) {
+      alert(err.response?.data?.message || 'Silme başarısız')
     } finally {
       setDeleting(null)
     }

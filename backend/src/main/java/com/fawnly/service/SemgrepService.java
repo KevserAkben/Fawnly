@@ -8,17 +8,18 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class SemgrepService {
 
     private static final Logger log = LoggerFactory.getLogger(SemgrepService.class);
+    private static final int SCAN_TIMEOUT_MINUTES = 10;
 
     private final ObjectMapper objectMapper;
 
@@ -33,36 +34,56 @@ public class SemgrepService {
     }
 
     public List<Finding> runScan(Long scanId, Path sourceDir) throws Exception {
+        Path resolvedRules = resolveRulesPath();
         Path resultFile = sourceDir.getParent().resolve("semgrep-result.json");
+        Path errorFile = sourceDir.getParent().resolve("semgrep-error.log");
 
         ProcessBuilder pb = new ProcessBuilder(
                 semgrepPath,
-                "--config", rulesPath,
+                "--config", resolvedRules.toString(),
                 "--json",
                 "--quiet",
+                "--metrics=off",
+                "--timeout", "30",
                 sourceDir.toString()
         );
-        pb.redirectErrorStream(true);
         pb.redirectOutput(resultFile.toFile());
+        pb.redirectError(errorFile.toFile());
 
         Process process = pb.start();
-
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            while (reader.readLine() != null) {
-                // drain output
-            }
+        boolean finished = process.waitFor(SCAN_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new RuntimeException("Semgrep timed out");
         }
 
-        int exitCode = process.waitFor();
+        int exitCode = process.exitValue();
+        // 0 = no findings, 1 = findings found; anything else is a tool error
         if (exitCode != 0 && exitCode != 1) {
-            log.warn("Semgrep exited with code {} for scan {}", exitCode, scanId);
+            String stderr = Files.exists(errorFile) ? Files.readString(errorFile) : "";
+            log.warn("Semgrep exited with code {} for scan {}: {}", scanId, exitCode, stderr);
+            throw new RuntimeException("Semgrep failed with exit code " + exitCode);
         }
 
-        if (!Files.exists(resultFile)) {
+        if (!Files.exists(resultFile) || Files.size(resultFile) == 0) {
             return List.of();
         }
 
         return parseResults(scanId, resultFile, sourceDir);
+    }
+
+    private Path resolveRulesPath() {
+        Path configured = Paths.get(rulesPath);
+        if (Files.isRegularFile(configured)) {
+            return configured.toAbsolutePath().normalize();
+        }
+
+        Path fromCwdParent = Paths.get("..").resolve(rulesPath);
+        if (Files.isRegularFile(fromCwdParent)) {
+            return fromCwdParent.toAbsolutePath().normalize();
+        }
+
+        throw new IllegalStateException("Semgrep rules file not found: " + rulesPath);
     }
 
     private List<Finding> parseResults(Long scanId, Path resultFile, Path sourceDir) throws Exception {
@@ -81,7 +102,7 @@ public class SemgrepService {
             finding.setScanId(scanId);
 
             JsonNode checkId = result.get("check_id");
-            finding.setRuleId(checkId != null ? checkId.asText() : "unknown");
+            finding.setRuleId(truncate(checkId != null ? checkId.asText() : "unknown", 255));
 
             JsonNode extra = result.get("extra");
             if (extra != null) {
@@ -93,10 +114,8 @@ public class SemgrepService {
 
                 JsonNode metadata = extra.get("metadata");
                 if (metadata != null) {
-                    JsonNode owasp = metadata.get("owasp");
-                    finding.setOwaspCode(owasp != null ? owasp.asText() : null);
-                    JsonNode cwe = metadata.get("cwe");
-                    finding.setCwe(cwe != null ? cwe.asText() : null);
+                    finding.setOwaspCode(firstMetadataText(metadata.get("owasp"), 50));
+                    finding.setCwe(firstMetadataText(metadata.get("cwe"), 50));
                 }
             } else {
                 finding.setSeverity("MEDIUM");
@@ -107,11 +126,11 @@ public class SemgrepService {
             String filePath = path != null ? path.asText() : "unknown";
             if (filePath.startsWith(basePath)) {
                 filePath = filePath.substring(basePath.length());
-                if (filePath.startsWith("/")) {
+                if (filePath.startsWith("/") || filePath.startsWith("\\")) {
                     filePath = filePath.substring(1);
                 }
             }
-            finding.setFilePath(filePath);
+            finding.setFilePath(filePath.isBlank() ? "unknown" : filePath);
 
             JsonNode start = result.get("start");
             if (start != null && start.has("line")) {
@@ -127,11 +146,37 @@ public class SemgrepService {
         return findings;
     }
 
+    private String firstMetadataText(JsonNode node, int maxLen) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        String value;
+        if (node.isArray()) {
+            if (node.isEmpty()) {
+                return null;
+            }
+            value = node.get(0).asText();
+        } else {
+            value = node.asText();
+        }
+        return truncate(value, maxLen);
+    }
+
     private String mapSeverity(String semgrepSeverity) {
+        if (semgrepSeverity == null) {
+            return "MEDIUM";
+        }
         return switch (semgrepSeverity.toUpperCase()) {
             case "ERROR", "HIGH" -> "HIGH";
             case "WARNING", "MEDIUM" -> "MEDIUM";
             default -> "LOW";
         };
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= max ? value : value.substring(0, max);
     }
 }

@@ -57,9 +57,9 @@ export default function Results() {
     return <div className="flex justify-center items-center h-64"><Spinner size="lg" /></div>
   }
 
-  if (error) return <div className="text-red-600">{error}</div>
+  if (error || !data) return <div className="text-red-600">{error || 'Sonuçlar yüklenemedi'}</div>
 
-  const filtered = data.findings.filter((f) => {
+  const filtered = (data?.findings || []).filter((f) => {
     if (severityFilter !== 'ALL' && f.severity !== severityFilter) return false
     if (triageFilter !== 'ALL' && f.triageStatus !== triageFilter) return false
     return true

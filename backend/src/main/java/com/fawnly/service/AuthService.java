@@ -185,10 +185,15 @@ public class AuthService {
         String accessToken = jwtService.generateAccessToken(user.getId(), user.getUsername());
         String refreshToken = jwtService.generateRefreshToken();
 
+        String info = SanitizeUtil.sanitize(deviceInfo);
+        if (info != null && info.length() > 500) {
+            info = info.substring(0, 500);
+        }
+
         Session session = new Session();
         session.setUserId(user.getId());
         session.setRefreshToken(refreshToken);
-        session.setDeviceInfo(SanitizeUtil.sanitize(deviceInfo));
+        session.setDeviceInfo(info);
         session.setExpiresAt(Instant.now().plus(jwtService.getRefreshTokenExpirationMs(), ChronoUnit.MILLIS));
         sessionRepository.save(session);
 
@@ -196,6 +201,8 @@ public class AuthService {
     }
 
     private void sendVerificationCode(User user, String purpose) {
+        emailVerificationRepository.invalidateUnused(user.getId(), purpose);
+
         String code = OtpGenerator.generate();
         EmailVerification verification = new EmailVerification();
         verification.setUserId(user.getId());

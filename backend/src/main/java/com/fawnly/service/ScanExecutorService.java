@@ -4,18 +4,18 @@ import com.fawnly.entity.Finding;
 import com.fawnly.entity.Scan;
 import com.fawnly.repository.FindingRepository;
 import com.fawnly.repository.ScanRepository;
+import com.fawnly.util.ValidationUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.file.*;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -23,6 +23,10 @@ import java.util.zip.ZipInputStream;
 public class ScanExecutorService {
 
     private static final Logger log = LoggerFactory.getLogger(ScanExecutorService.class);
+    private static final int GIT_TIMEOUT_MINUTES = 3;
+    private static final long MAX_EXTRACTED_BYTES = 100L * 1024 * 1024;
+    private static final int MAX_ZIP_ENTRIES = 5000;
+    private static final int ERROR_MESSAGE_MAX = 500;
 
     private final ScanRepository scanRepository;
     private final FindingRepository findingRepository;
@@ -41,8 +45,9 @@ public class ScanExecutorService {
 
     @Async("scanTaskExecutor")
     public void executeScan(Long scanId) {
-        Scan scan = scanRepository.findById(scanId).orElse(null);
+        Scan scan = waitForScan(scanId);
         if (scan == null) {
+            log.error("Scan {} not found after retries, aborting", scanId);
             return;
         }
 
@@ -60,72 +65,134 @@ public class ScanExecutorService {
 
             scan.setStatus("done");
             scan.setFinishedAt(Instant.now());
+            scan.setErrorMessage(null);
             scanRepository.save(scan);
 
             log.info("Scan {} completed with {} findings", scanId, findings.size());
         } catch (Exception e) {
             log.error("Scan {} failed", scanId, e);
-            scan.setStatus("failed");
-            scan.setFinishedAt(Instant.now());
-            scan.setErrorMessage(e.getMessage());
-            scanRepository.save(scan);
+            try {
+                scan.setStatus("failed");
+                scan.setFinishedAt(Instant.now());
+                scan.setErrorMessage(truncate(e.getMessage(), ERROR_MESSAGE_MAX));
+                scanRepository.save(scan);
+            } catch (Exception persistError) {
+                log.error("Failed to persist error status for scan {}", scanId, persistError);
+            }
         } finally {
             cleanupDirectory(scanDir);
         }
     }
 
+    private Scan waitForScan(Long scanId) {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            Scan scan = scanRepository.findById(scanId).orElse(null);
+            if (scan != null) {
+                return scan;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
+    }
+
     private Path prepareSource(Scan scan, Path scanDir) throws Exception {
         if ("git".equals(scan.getSourceType())) {
             return cloneRepository(scan.getSourceRef(), scanDir);
-        } else {
-            return unzipSource(scan.getSourceRef(), scanDir);
         }
+        return unzipSource(scan.getSourceRef(), scanDir);
     }
 
     private Path cloneRepository(String githubUrl, Path scanDir) throws Exception {
+        String normalizedUrl = ValidationUtil.normalizeGithubUrl(githubUrl);
+        if (normalizedUrl == null) {
+            throw new RuntimeException("Invalid GitHub URL");
+        }
+
         Path targetDir = scanDir.resolve("source");
         Files.createDirectories(targetDir);
 
-        ProcessBuilder pb = new ProcessBuilder("git", "clone", "--depth", "1", githubUrl, targetDir.toString());
+        ProcessBuilder pb = new ProcessBuilder(
+                "git", "clone", "--depth", "1", "--single-branch", "--no-tags",
+                "--", normalizedUrl, targetDir.toString());
         pb.redirectErrorStream(true);
+        pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+        pb.environment().put("GIT_ASKPASS", "echo");
+
+        Path gitLog = scanDir.resolve("git.log");
+        pb.redirectOutput(gitLog.toFile());
 
         Process process = pb.start();
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
-            }
+        boolean finished = process.waitFor(GIT_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new RuntimeException("Git clone timed out");
         }
-
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-            throw new RuntimeException("Git clone failed: " + output);
+        if (process.exitValue() != 0) {
+            String output = Files.exists(gitLog) ? Files.readString(gitLog) : "";
+            throw new RuntimeException("Git clone failed: " + truncate(output, 300));
         }
 
         return targetDir;
     }
 
     private Path unzipSource(String zipPath, Path scanDir) throws Exception {
-        Path zipFile = Paths.get(zipPath);
-        Path targetDir = scanDir.resolve("source");
+        Path zipFile = Paths.get(zipPath).toAbsolutePath().normalize();
+        Path allowedRoot = Paths.get(tempDir).toAbsolutePath().normalize();
+        if (!zipFile.startsWith(allowedRoot) || !Files.exists(zipFile)) {
+            throw new RuntimeException("Invalid ZIP path");
+        }
+
+        Path targetDir = scanDir.resolve("source").toAbsolutePath().normalize();
         Files.createDirectories(targetDir);
+
+        long extractedBytes = 0;
+        int entryCount = 0;
 
         try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipFile))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                Path entryPath = targetDir.resolve(entry.getName()).normalize();
-                if (!entryPath.startsWith(targetDir)) {
-                    throw new RuntimeException("Zip entry outside target directory: " + entry.getName());
+                entryCount++;
+                if (entryCount > MAX_ZIP_ENTRIES) {
+                    throw new RuntimeException("ZIP contains too many entries");
                 }
+
+                String name = entry.getName();
+                if (name.contains("\0")) {
+                    throw new RuntimeException("Invalid zip entry name");
+                }
+
+                Path entryPath = targetDir.resolve(name).normalize();
+                if (!entryPath.startsWith(targetDir)) {
+                    throw new RuntimeException("Zip entry outside target directory");
+                }
+
                 if (entry.isDirectory()) {
                     Files.createDirectories(entryPath);
                 } else {
                     Files.createDirectories(entryPath.getParent());
-                    Files.copy(zis, entryPath, StandardCopyOption.REPLACE_EXISTING);
+                    try (var out = Files.newOutputStream(entryPath)) {
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = zis.read(buffer)) != -1) {
+                            extractedBytes += read;
+                            if (extractedBytes > MAX_EXTRACTED_BYTES) {
+                                throw new RuntimeException("Unzipped content exceeds size limit");
+                            }
+                            out.write(buffer, 0, read);
+                        }
+                    }
                 }
                 zis.closeEntry();
             }
+        }
+
+        if (entryCount == 0) {
+            throw new RuntimeException("ZIP file is empty or invalid");
         }
 
         Files.deleteIfExists(zipFile);
@@ -148,5 +215,13 @@ public class ScanExecutorService {
         } catch (Exception e) {
             log.warn("Failed to cleanup directory {}", directory, e);
         }
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) {
+            return "Unknown error";
+        }
+        String cleaned = value.replaceAll("[\\r\\n]+", " ").trim();
+        return cleaned.length() <= max ? cleaned : cleaned.substring(0, max);
     }
 }

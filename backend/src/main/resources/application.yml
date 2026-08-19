@@ -55,7 +55,7 @@ fawnly:
     semgrep-path: ${SEMGREP_PATH:semgrep}
     rules-path: ${SEMGREP_RULES_PATH:rules/owasp_java.yaml}
   rate-limit:
-    requests-per-minute: 30
+    requests-per-minute: 60
 
 management:
   endpoints:

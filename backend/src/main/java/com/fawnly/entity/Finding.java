@@ -14,7 +14,7 @@ public class Finding {
     @Column(name = "scan_id", nullable = false)
     private Long scanId;
 
-    @Column(name = "rule_id", nullable = false, length = 100)
+    @Column(name = "rule_id", nullable = false, length = 255)
     private String ruleId;
 
     @Column(nullable = false, length = 10)
@@ -26,10 +26,10 @@ public class Finding {
     @Column(name = "line_no", nullable = false)
     private Integer lineNo;
 
-    @Column(name = "owasp_code", length = 20)
+    @Column(name = "owasp_code", length = 50)
     private String owaspCode;
 
-    @Column(length = 20)
+    @Column(length = 50)
     private String cwe;
 
     @Column(nullable = false, columnDefinition = "TEXT")

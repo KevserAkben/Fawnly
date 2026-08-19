@@ -18,6 +18,8 @@ export default function Scan() {
   const [progress, setProgress] = useState(0)
   const [scanError, setScanError] = useState('')
   const pollRef = useRef(null)
+  const pollStartedAt = useRef(null)
+  const POLL_TIMEOUT_MS = 15 * 60 * 1000
 
   useEffect(() => {
     return () => {
@@ -29,11 +31,18 @@ export default function Scan() {
     setScanning(true)
     setScanId(id)
     setProgress(10)
+    pollStartedAt.current = Date.now()
 
     pollRef.current = setInterval(async () => {
+      if (Date.now() - pollStartedAt.current > POLL_TIMEOUT_MS) {
+        clearInterval(pollRef.current)
+        setScanning(false)
+        setScanError('Tarama zaman aşımına uğradı')
+        return
+      }
       try {
         const { data } = await getScanStatus(id)
-        setProgress(data.progress)
+        setProgress(data.progress ?? 10)
 
         if (data.status === 'done') {
           clearInterval(pollRef.current)
@@ -43,7 +52,10 @@ export default function Scan() {
           setScanning(false)
           setScanError(data.errorMessage || 'Tarama başarısız oldu')
         }
-      } catch {
+      } catch (err) {
+        if (err.response?.status === 429) {
+          return
+        }
         clearInterval(pollRef.current)
         setScanning(false)
         setScanError('Durum sorgulanamadı')
