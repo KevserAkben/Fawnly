@@ -1,0 +1,14 @@
+.git
+.gitignore
+**/.env
+**/.env.local
+**/.idea
+**/.vscode
+**/node_modules
+**/dist
+**/target
+**/*.iml
+**/.DS_Store
+README.md
+samples
+agent-transcripts
